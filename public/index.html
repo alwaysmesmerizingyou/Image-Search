@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Image Search</title>
+  <title>Image Search with Debug</title>
   <style>
     body {
       background: #111;
@@ -26,35 +26,157 @@
       grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: 1rem;
       width: 100%;
+      margin-bottom: 2rem;
     }
     img {
       width: 100%;
       height: auto;
       border-radius: 8px;
     }
+    #debug {
+      background: #222;
+      color: #0f0;
+      padding: 1rem;
+      border-radius: 8px;
+      width: 100%;
+      max-width: 800px;
+      max-height: 400px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      margin-top: 1rem;
+    }
+    .debug-entry {
+      margin-bottom: 10px;
+      padding: 5px;
+      border-left: 3px solid #0f0;
+      padding-left: 10px;
+    }
+    .debug-timestamp {
+      color: #888;
+      font-size: 10px;
+    }
+    .debug-message {
+      color: #0f0;
+      font-weight: bold;
+    }
+    .debug-data {
+      color: #ff0;
+      margin-top: 5px;
+    }
+    .error {
+      color: #f00 !important;
+    }
+    #toggle-debug {
+      margin-top: 1rem;
+      padding: 0.5rem 1rem;
+      background: #333;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <input id="search" placeholder="Enter a keyword and press Enter" />
   <div id="images"></div>
-
+  <button id="toggle-debug">Show Debug Info</button>
+  <div id="debug" style="display: none;"></div>
+  
   <script>
     const input = document.getElementById("search");
     const imagesDiv = document.getElementById("images");
-
+    const debugDiv = document.getElementById("debug");
+    const toggleDebugBtn = document.getElementById("toggle-debug");
+    
+    let debugVisible = false;
+    
+    toggleDebugBtn.addEventListener("click", () => {
+      debugVisible = !debugVisible;
+      debugDiv.style.display = debugVisible ? "block" : "none";
+      toggleDebugBtn.textContent = debugVisible ? "Hide Debug Info" : "Show Debug Info";
+    });
+    
+    function displayDebug(debugData) {
+      debugDiv.innerHTML = "";
+      if (!debugData || !Array.isArray(debugData)) {
+        debugDiv.innerHTML = "No debug data available";
+        return;
+      }
+      
+      debugData.forEach(entry => {
+        const entryDiv = document.createElement("div");
+        entryDiv.className = "debug-entry";
+        
+        const timestampDiv = document.createElement("div");
+        timestampDiv.className = "debug-timestamp";
+        timestampDiv.textContent = entry.timestamp;
+        
+        const messageDiv = document.createElement("div");
+        messageDiv.className = entry.message.includes("ERROR") ? "debug-message error" : "debug-message";
+        messageDiv.textContent = entry.message;
+        
+        entryDiv.appendChild(timestampDiv);
+        entryDiv.appendChild(messageDiv);
+        
+        if (entry.data !== null && entry.data !== undefined) {
+          const dataDiv = document.createElement("div");
+          dataDiv.className = "debug-data";
+          dataDiv.textContent = typeof entry.data === 'object' ? 
+            JSON.stringify(entry.data, null, 2) : 
+            entry.data;
+          entryDiv.appendChild(dataDiv);
+        }
+        
+        debugDiv.appendChild(entryDiv);
+      });
+      
+      // Auto-scroll to bottom
+      debugDiv.scrollTop = debugDiv.scrollHeight;
+    }
+    
     input.addEventListener("keypress", async (e) => {
       if (e.key === "Enter") {
         const keyword = input.value.trim();
         if (!keyword) return;
+        
         imagesDiv.innerHTML = "Loading...";
-        const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
-        const urls = await res.json();
-        imagesDiv.innerHTML = "";
-        urls.forEach(src => {
-          const img = document.createElement("img");
-          img.src = src;
-          imagesDiv.appendChild(img);
-        });
+        debugDiv.innerHTML = "Starting search...";
+        
+        try {
+          const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+          const data = await res.json();
+          
+          // Display debug info
+          displayDebug(data.debug);
+          
+          // Handle images
+          if (data.images && Array.isArray(data.images)) {
+            imagesDiv.innerHTML = "";
+            if (data.images.length === 0) {
+              imagesDiv.innerHTML = "No images found";
+            } else {
+              data.images.forEach(src => {
+                const img = document.createElement("img");
+                img.src = src;
+                img.onerror = () => {
+                  console.log(`Failed to load image: ${src}`);
+                };
+                imagesDiv.appendChild(img);
+              });
+            }
+          } else if (data.error) {
+            imagesDiv.innerHTML = `Error: ${data.error}`;
+          } else {
+            imagesDiv.innerHTML = "Unexpected response format";
+          }
+          
+        } catch (error) {
+          imagesDiv.innerHTML = `Request failed: ${error.message}`;
+          debugDiv.innerHTML = `Fetch error: ${error.message}`;
+        }
       }
     });
   </script>

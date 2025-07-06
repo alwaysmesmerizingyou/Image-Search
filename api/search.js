@@ -18,10 +18,10 @@ export default async function handler(req, res) {
   addDebug(`Starting Google image search for: "${q}"`);
   
   // Google Custom Search API credentials
-  const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-  const GOOGLE_SEARCH_ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
+  const google_api_key = process.env.google_api_key;
+  const google_search_engine_id = process.env.google_search_engine_id;
   
-  if (!GOOGLE_API_KEY || !GOOGLE_SEARCH_ENGINE_ID) {
+  if (!google_api_key || !google_search_engine_id) {
     addDebug("ERROR: Missing Google API credentials");
     return res.status(500).json({ 
       error: "Missing Google API credentials", 
@@ -33,7 +33,7 @@ export default async function handler(req, res) {
           "2. Enable Custom Search API",
           "3. Create API key",
           "4. Set up Custom Search Engine at https://cse.google.com/",
-          "5. Add environment variables: GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID"
+          "5. Add environment variables: google_api_key and google_search_engine_id"
         ]
       }
     });
@@ -42,8 +42,8 @@ export default async function handler(req, res) {
   try {
     // Build Google Custom Search API URL
     const searchUrl = new URL('https://www.googleapis.com/customsearch/v1');
-    searchUrl.searchParams.append('key', GOOGLE_API_KEY);
-    searchUrl.searchParams.append('cx', GOOGLE_SEARCH_ENGINE_ID);
+    searchUrl.searchParams.append('key', google_api_key);
+    searchUrl.searchParams.append('cx', google_search_engine_id);
     searchUrl.searchParams.append('q', q);
     searchUrl.searchParams.append('searchType', 'image');
     searchUrl.searchParams.append('num', '10'); // Max 10 results per request

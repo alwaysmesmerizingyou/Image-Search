@@ -47,7 +47,7 @@ export default async function handler(req, res) {
     searchUrl.searchParams.append('q', q);
     searchUrl.searchParams.append('searchType', 'image');
     searchUrl.searchParams.append('num', '10'); // Max 10 results per request
-    searchUrl.searchParams.append('safe', 'active');
+    searchUrl.searchParams.append('safe', 'off');
     searchUrl.searchParams.append('fileType', 'jpg,png,gif,webp');
     searchUrl.searchParams.append('imgSize', 'medium');
     

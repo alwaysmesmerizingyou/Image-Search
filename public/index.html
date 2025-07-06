@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Image Search</title>
+  <style>
+    body {
+      background: #111;
+      color: #fff;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+    input {
+      padding: 0.5rem;
+      font-size: 1.2rem;
+      width: 80%;
+      max-width: 400px;
+      margin-bottom: 1rem;
+    }
+    #images {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 1rem;
+      width: 100%;
+    }
+    img {
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <input id="search" placeholder="Enter a keyword and press Enter" />
+  <div id="images"></div>
+
+  <script>
+    const input = document.getElementById("search");
+    const imagesDiv = document.getElementById("images");
+
+    input.addEventListener("keypress", async (e) => {
+      if (e.key === "Enter") {
+        const keyword = input.value.trim();
+        if (!keyword) return;
+        imagesDiv.innerHTML = "Loading...";
+        const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+        const urls = await res.json();
+        imagesDiv.innerHTML = "";
+        urls.forEach(src => {
+          const img = document.createElement("img");
+          img.src = src;
+          imagesDiv.appendChild(img);
+        });
+      }
+    });
+  </script>
+</body>
+</html>

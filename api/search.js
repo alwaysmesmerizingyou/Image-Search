@@ -18,14 +18,48 @@ export default async function handler(req, res) {
   addDebug(`Starting search for: "${q}"`);
   
   try {
-    // Manual URL encoding to avoid the pattern error
-    const encodedQuery = q.replace(/[^a-zA-Z0-9]/g, function(char) {
-      return '%' + char.charCodeAt(0).toString(16).toUpperCase();
-    });
+    // Better URL encoding
+    const encodedQuery = encodeURIComponent(q);
+    addDebug(`Encoded query: "${encodedQuery}"`);
     
-    addDebug(`Manual encoded query: "${encodedQuery}"`);
+    // Try DuckDuckGo's instant answer API first
+    const instantAnswerUrl = `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`;
+    addDebug(`Trying instant answer API: ${instantAnswerUrl}`);
     
-    // Get the full HTML page with images loaded
+    try {
+      const instantResponse = await fetch(instantAnswerUrl, {
+        method: 'GET',
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; ImageSearchBot/1.0)",
+          "Accept": "application/json"
+        }
+      });
+      
+      if (instantResponse.ok) {
+        const instantData = await instantResponse.json();
+        addDebug("Instant answer API response received");
+        
+        // Extract images from instant answer
+        const images = [];
+        if (instantData.Image) images.push(instantData.Image);
+        if (instantData.RelatedTopics) {
+          instantData.RelatedTopics.forEach(topic => {
+            if (topic.Icon && topic.Icon.URL) {
+              images.push(topic.Icon.URL);
+            }
+          });
+        }
+        
+        if (images.length > 0) {
+          addDebug(`Found ${images.length} images from instant answer`);
+          return res.status(200).json({ images, debug });
+        }
+      }
+    } catch (e) {
+      addDebug(`Instant answer API failed: ${e.message}`);
+    }
+    
+    // Fallback to web scraping with improved approach
     const searchUrl = `https://duckduckgo.com/?q=${encodedQuery}&iar=images&iax=images&ia=images`;
     addDebug(`Making request to: ${searchUrl}`);
     
@@ -38,91 +72,140 @@ export default async function handler(req, res) {
         "Accept-Encoding": "gzip, deflate, br",
         "DNT": "1",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none"
       }
     });
     
     addDebug(`Search response status: ${searchResponse.status}`);
-    addDebug(`Search response ok: ${searchResponse.ok}`);
     
     if (!searchResponse.ok) {
-      addDebug("Initial request failed");
+      addDebug("Search request failed");
       return res.status(500).json({ error: "Failed to fetch search page", debug });
     }
     
     const searchText = await searchResponse.text();
     addDebug(`Search response text length: ${searchText.length}`);
     
-    // Look for image data in the HTML
-    // DuckDuckGo embeds image data in JavaScript variables
-    addDebug("Looking for image data in HTML...");
+    // Look for the vqd token which is needed for image requests
+    const vqdMatch = searchText.match(/vqd=['"]([^'"]+)['"]/);
+    if (vqdMatch) {
+      const vqd = vqdMatch[1];
+      addDebug(`Found vqd token: ${vqd}`);
+      
+      // Make a request to the images endpoint
+      const imagesUrl = `https://duckduckgo.com/i.js?q=${encodedQuery}&o=json&p=1&s=0&u=bing&f=,,,&l=us-en&vqd=${vqd}`;
+      addDebug(`Making images API request: ${imagesUrl}`);
+      
+      const imagesResponse = await fetch(imagesUrl, {
+        method: 'GET',
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json",
+          "Referer": searchUrl,
+          "Accept-Language": "en-US,en;q=0.5"
+        }
+      });
+      
+      if (imagesResponse.ok) {
+        const imagesData = await imagesResponse.json();
+        addDebug(`Images API response received`);
+        
+        if (imagesData.results && imagesData.results.length > 0) {
+          const imageUrls = imagesData.results.map(result => result.image).filter(url => url);
+          addDebug(`Found ${imageUrls.length} image URLs from API`);
+          return res.status(200).json({ images: imageUrls.slice(0, 20), debug });
+        }
+      } else {
+        addDebug(`Images API request failed: ${imagesResponse.status}`);
+      }
+    }
     
-    // Try different patterns to find image URLs
+    // Enhanced HTML parsing as final fallback
+    addDebug("Trying enhanced HTML parsing...");
+    
     const imagePatterns = [
-      // Look for thumbnail URLs in the HTML
-      /https:\/\/external-content\.duckduckgo\.com\/iu\/\?u=([^&"']+)/g,
-      // Look for direct image URLs
-      /https:\/\/[^"'\s]+\.(?:jpg|jpeg|png|gif|webp)/gi,
-      // Look for data-src attributes
-      /data-src="([^"]+)"/g,
-      // Look for src attributes in img tags
-      /<img[^>]+src="([^"]+)"/g
+      // DuckDuckGo proxy URLs
+      /https:\/\/external-content\.duckduckgo\.com\/iu\/\?u=([^&"'>\s]+)/g,
+      // Direct image URLs
+      /https?:\/\/[^"'\s<>]+\.(?:jpg|jpeg|png|gif|webp|svg)(?:\?[^"'\s<>]*)?/gi,
+      // Data URLs for images
+      /data-src=["']([^"']+)["']/g,
+      // Background images
+      /background-image:\s*url\(["']?([^"')]+)["']?\)/g,
+      // JSON embedded in script tags
+      /"image":"([^"]+)"/g,
+      // Thumbnail URLs
+      /"thumb":"([^"]+)"/g
     ];
     
     let foundUrls = new Set();
     
-    for (let i = 0; i < imagePatterns.length; i++) {
-      const pattern = imagePatterns[i];
+    imagePatterns.forEach((pattern, index) => {
       const matches = [...searchText.matchAll(pattern)];
-      addDebug(`Pattern ${i} found ${matches.length} matches`);
+      addDebug(`Pattern ${index} found ${matches.length} matches`);
       
       matches.forEach(match => {
         let url = match[1] || match[0];
-        if (url.startsWith('https://external-content.duckduckgo.com/iu/?u=')) {
-          // Extract the actual image URL from DuckDuckGo's proxy
-          const actualUrl = decodeURIComponent(url.split('u=')[1].split('&')[0]);
-          foundUrls.add(actualUrl);
-        } else if (url.startsWith('http') && /\.(jpg|jpeg|png|gif|webp)$/i.test(url)) {
+        
+        // Handle DuckDuckGo proxy URLs
+        if (url.includes('external-content.duckduckgo.com/iu/?u=')) {
+          try {
+            const actualUrl = decodeURIComponent(url.split('u=')[1].split('&')[0]);
+            if (actualUrl.startsWith('http')) {
+              foundUrls.add(actualUrl);
+            }
+          } catch (e) {
+            addDebug(`Failed to decode proxy URL: ${url}`);
+          }
+        } else if (url.startsWith('http') && /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(url)) {
           foundUrls.add(url);
         }
       });
+    });
+    
+    // Also try to find JavaScript data
+    const jsDataMatches = searchText.match(/DDG\.pageLayout\.load\('images',\s*(\{.*?\})\);/s);
+    if (jsDataMatches) {
+      try {
+        const jsonData = JSON.parse(jsDataMatches[1]);
+        addDebug("Found and parsed JavaScript data");
+        
+        if (jsonData.results) {
+          jsonData.results.forEach(result => {
+            if (result.image) foundUrls.add(result.image);
+            if (result.thumbnail) foundUrls.add(result.thumbnail);
+          });
+        }
+      } catch (e) {
+        addDebug(`Failed to parse JavaScript data: ${e.message}`);
+      }
     }
     
-    addDebug(`Found ${foundUrls.size} unique image URLs`);
-    
-    // Convert to array and limit results
     const urls = Array.from(foundUrls).slice(0, 20);
-    addDebug(`Final URLs (limited to 20):`, urls);
+    addDebug(`Final result: ${urls.length} unique image URLs`);
     
     if (urls.length === 0) {
-      // If no images found, look for any JSON data in the page
-      const jsonMatches = searchText.match(/DDG\.pageLayout\.load\('images',(\{.*?\})\);/);
-      if (jsonMatches) {
-        addDebug("Found JSON data in page layout");
-        try {
-          const jsonData = JSON.parse(jsonMatches[1]);
-          addDebug("Parsed JSON data:", jsonData);
-          
-          if (jsonData.results) {
-            const jsonUrls = jsonData.results.map(r => r.image).filter(url => url);
-            addDebug(`Extracted ${jsonUrls.length} URLs from JSON`);
-            return res.status(200).json({ images: jsonUrls, debug });
-          }
-        } catch (e) {
-          addDebug(`Failed to parse JSON: ${e.message}`);
-        }
-      }
-      
-      // Show some of the HTML content for debugging
-      addDebug("No images found. HTML sample:", searchText.substring(0, 2000));
-      return res.status(200).json({ images: [], debug, message: "No images found" });
+      // Show HTML sample for debugging
+      addDebug("No images found. HTML sample:", searchText.substring(0, 1000));
+      return res.status(200).json({ 
+        images: [], 
+        debug, 
+        message: "No images found. DuckDuckGo may be blocking or the query returned no results.",
+        suggestions: [
+          "Try a different search query",
+          "Use a different image search service",
+          "Check if your IP is being rate-limited"
+        ]
+      });
     }
     
     res.status(200).json({ images: urls, debug });
     
   } catch (error) {
     addDebug(`ERROR: ${error.message}`);
-    addDebug(`ERROR name: ${error.name}`);
     addDebug(`ERROR stack:`, error.stack);
     res.status(500).json({ error: error.message, debug });
   }

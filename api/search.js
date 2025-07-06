@@ -25,117 +25,98 @@ export default async function handler(req, res) {
     
     addDebug(`Manual encoded query: "${encodedQuery}"`);
     
-    // Construct URL manually
+    // Get the full HTML page with images loaded
     const searchUrl = `https://duckduckgo.com/?q=${encodedQuery}&iar=images&iax=images&ia=images`;
-    addDebug(`Making initial request to: ${searchUrl}`);
+    addDebug(`Making request to: ${searchUrl}`);
     
     const searchResponse = await fetch(searchUrl, {
       method: 'GET',
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
       }
     });
     
     addDebug(`Search response status: ${searchResponse.status}`);
     addDebug(`Search response ok: ${searchResponse.ok}`);
     
+    if (!searchResponse.ok) {
+      addDebug("Initial request failed");
+      return res.status(500).json({ error: "Failed to fetch search page", debug });
+    }
+    
     const searchText = await searchResponse.text();
     addDebug(`Search response text length: ${searchText.length}`);
-    addDebug(`First 1000 chars of response:`, searchText.substring(0, 1000));
     
-    // Try multiple vqd extraction patterns
-    const vqdPatterns = [
-      /vqd=([\d-]+)/,
-      /vqd=['"]([^'"]+)['"]/,
-      /"vqd"\s*:\s*"([^"]+)"/,
-      /vqd:\s*'([^']+)'/,
-      /vqd:\s*"([^"]+)"/,
-      /vqd['":\s=]+([\d-]+)/,
-      /"vqd":"([^"]+)"/
+    // Look for image data in the HTML
+    // DuckDuckGo embeds image data in JavaScript variables
+    addDebug("Looking for image data in HTML...");
+    
+    // Try different patterns to find image URLs
+    const imagePatterns = [
+      // Look for thumbnail URLs in the HTML
+      /https:\/\/external-content\.duckduckgo\.com\/iu\/\?u=([^&"']+)/g,
+      // Look for direct image URLs
+      /https:\/\/[^"'\s]+\.(?:jpg|jpeg|png|gif|webp)/gi,
+      // Look for data-src attributes
+      /data-src="([^"]+)"/g,
+      // Look for src attributes in img tags
+      /<img[^>]+src="([^"]+)"/g
     ];
     
-    let vqd = null;
-    for (let i = 0; i < vqdPatterns.length; i++) {
-      const match = searchText.match(vqdPatterns[i]);
-      if (match) {
-        vqd = match[1];
-        addDebug(`Found vqd token with pattern ${i}: ${vqd}`);
-        break;
-      }
-    }
+    let foundUrls = new Set();
     
-    if (!vqd) {
-      addDebug("Could not find vqd token with any pattern");
-      // Look for any occurrence of 'vqd' in the response
-      const vqdMatches = searchText.match(/vqd/gi);
-      addDebug(`Found ${vqdMatches ? vqdMatches.length : 0} 'vqd' occurrences`);
+    for (let i = 0; i < imagePatterns.length; i++) {
+      const pattern = imagePatterns[i];
+      const matches = [...searchText.matchAll(pattern)];
+      addDebug(`Pattern ${i} found ${matches.length} matches`);
       
-      // Show context around vqd occurrences
-      const vqdIndex = searchText.indexOf('vqd');
-      if (vqdIndex !== -1) {
-        const context = searchText.substring(Math.max(0, vqdIndex - 100), vqdIndex + 200);
-        addDebug(`Context around first 'vqd':`, context);
+      matches.forEach(match => {
+        let url = match[1] || match[0];
+        if (url.startsWith('https://external-content.duckduckgo.com/iu/?u=')) {
+          // Extract the actual image URL from DuckDuckGo's proxy
+          const actualUrl = decodeURIComponent(url.split('u=')[1].split('&')[0]);
+          foundUrls.add(actualUrl);
+        } else if (url.startsWith('http') && /\.(jpg|jpeg|png|gif|webp)$/i.test(url)) {
+          foundUrls.add(url);
+        }
+      });
+    }
+    
+    addDebug(`Found ${foundUrls.size} unique image URLs`);
+    
+    // Convert to array and limit results
+    const urls = Array.from(foundUrls).slice(0, 20);
+    addDebug(`Final URLs (limited to 20):`, urls);
+    
+    if (urls.length === 0) {
+      // If no images found, look for any JSON data in the page
+      const jsonMatches = searchText.match(/DDG\.pageLayout\.load\('images',(\{.*?\})\);/);
+      if (jsonMatches) {
+        addDebug("Found JSON data in page layout");
+        try {
+          const jsonData = JSON.parse(jsonMatches[1]);
+          addDebug("Parsed JSON data:", jsonData);
+          
+          if (jsonData.results) {
+            const jsonUrls = jsonData.results.map(r => r.image).filter(url => url);
+            addDebug(`Extracted ${jsonUrls.length} URLs from JSON`);
+            return res.status(200).json({ images: jsonUrls, debug });
+          }
+        } catch (e) {
+          addDebug(`Failed to parse JSON: ${e.message}`);
+        }
       }
       
-      return res.status(500).json({ error: "Could not find vqd token", debug });
+      // Show some of the HTML content for debugging
+      addDebug("No images found. HTML sample:", searchText.substring(0, 2000));
+      return res.status(200).json({ images: [], debug, message: "No images found" });
     }
-    
-    addDebug(`Using vqd token: ${vqd}`);
-    
-    // Build image API URL manually
-    const imageApiUrl = `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encodedQuery}&vqd=${vqd}&f=,,,&p=1&v7exp=a`;
-    addDebug(`Making image API request to: ${imageApiUrl}`);
-    
-    const imageResponse = await fetch(imageApiUrl, {
-      method: 'GET',
-      headers: {
-        "Referer": "https://duckduckgo.com/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "en-US,en;q=0.5",
-        "X-Requested-With": "XMLHttpRequest"
-      }
-    });
-    
-    addDebug(`Image API response status: ${imageResponse.status}`);
-    addDebug(`Image API response ok: ${imageResponse.ok}`);
-    
-    const imageText = await imageResponse.text();
-    addDebug(`Image API response text length: ${imageText.length}`);
-    addDebug(`Image API raw response:`, imageText);
-    
-    // Try to parse as JSON
-    let imageData;
-    try {
-      imageData = JSON.parse(imageText);
-      addDebug("Successfully parsed JSON response");
-    } catch (parseError) {
-      addDebug(`JSON parse error: ${parseError.message}`);
-      addDebug(`Response was not valid JSON:`, imageText);
-      return res.status(500).json({ error: "Invalid JSON response", debug });
-    }
-    
-    if (!imageData) {
-      addDebug("No image data received after parsing");
-      return res.status(500).json({ error: "No image data", debug });
-    }
-    
-    addDebug("Image data structure:", Object.keys(imageData));
-    
-    if (!imageData.results) {
-      addDebug("No results array in image data");
-      return res.status(500).json({ error: "No results array", debug, imageData });
-    }
-    
-    addDebug(`Found ${imageData.results.length} image results`);
-    
-    const urls = imageData.results.map((result, index) => {
-      addDebug(`Result ${index}:`, result);
-      return result.image;
-    }).filter(url => url);
-    
-    addDebug(`Filtered to ${urls.length} valid URLs`);
-    addDebug(`Final URLs:`, urls);
     
     res.status(200).json({ images: urls, debug });
     

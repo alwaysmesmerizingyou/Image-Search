@@ -2,10 +2,11 @@ import axios from "axios";
 
 export default async function handler(req, res) {
   const q = req.query.q;
-  const searchParams = new URLSearchParams({ q, iax: "images", ia: "images" });
+  if (!q) return res.status(400).json([]);
 
   try {
-    const html = await axios.get("https://duckduckgo.com/?" + searchParams);
+    const searchParams = `q=${encodeURIComponent(q)}&iax=images&ia=images`;
+    const html = await axios.get(`https://duckduckgo.com/?${searchParams}`);
     const vqdMatch = html.data.match(/vqd='([^']+)'/);
     if (!vqdMatch) return res.status(500).json([]);
 

@@ -43,14 +43,25 @@ export default async function handler(req, res) {
     // Build Google Custom Search API URL
     const searchUrl = new URL('https://www.googleapis.com/customsearch/v1');
     searchUrl.searchParams.append('key', google_api_key);
-    searchUrl.searchParams.append('cx', google_search_engine_id);
-    searchUrl.searchParams.append('q', q);
-    searchUrl.searchParams.append('searchType', 'image');
-    searchUrl.searchParams.append('num', '10'); // Max 10 results per request
-    searchUrl.searchParams.append('safe', 'off');
-    searchUrl.searchParams.append('fileType', 'jpg,png,gif,webp');
-    searchUrl.searchParams.append('imgSize', 'medium');
-    
+searchUrl.searchParams.append('cx', google_search_engine_id);
+searchUrl.searchParams.append('q', q);
+searchUrl.searchParams.append('searchType', 'image');
+
+// Use max allowed (10), not 1000
+searchUrl.searchParams.append('num', '10');
+
+// Disable SafeSearch
+searchUrl.searchParams.append('safe', 'off');
+
+// Allow all file types (omit fileType)
+searchUrl.searchParams.delete('fileType');
+
+// Allow all image sizes (omit imgSize)
+searchUrl.searchParams.delete('imgSize');
+
+// Optionally broaden more:
+searchUrl.searchParams.append('imgType', 'photo');
+searchUrl.searchParams.append('rights', 'cc_publicdomain,cc_attribute,cc_sharealike,cc_noncommercial');
     addDebug(`Making request to Google Custom Search API`);
     
     const response = await fetch(searchUrl.toString(), {

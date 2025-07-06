@@ -39,20 +39,94 @@ export default async function handler(req, res) {
         const instantData = await instantResponse.json();
         addDebug("Instant answer API response received");
         
-        // Extract images from instant answer
+        // Extract and validate images from instant answer
         const images = [];
-        if (instantData.Image) images.push(instantData.Image);
+        
+        // Function to fix DuckDuckGo image URLs
+        function fixImageUrl(url) {
+          if (!url) return null;
+          
+          // Handle DuckDuckGo's proxy URLs
+          if (url.startsWith('//')) {
+            url = 'https:' + url;
+          }
+          
+          // Fix relative URLs
+          if (url.startsWith('/')) {
+            url = 'https://duckduckgo.com' + url;
+          }
+          
+          // Handle DuckDuckGo's icon URLs
+          if (url.includes('duckduckgo.com/i/')) {
+            // These are often broken, try to find the original
+            const iconMatch = url.match(/\/i\/([^.]+)\.png/);
+            if (iconMatch) {
+              // Try to construct a working URL
+              return `https://duckduckgo.com/i/${iconMatch[1]}.png`;
+            }
+          }
+          
+          return url;
+        }
+        
+        if (instantData.Image) {
+          const fixedUrl = fixImageUrl(instantData.Image);
+          if (fixedUrl) images.push(fixedUrl);
+        }
+        
         if (instantData.RelatedTopics) {
           instantData.RelatedTopics.forEach(topic => {
             if (topic.Icon && topic.Icon.URL) {
-              images.push(topic.Icon.URL);
+              const fixedUrl = fixImageUrl(topic.Icon.URL);
+              if (fixedUrl) images.push(fixedUrl);
             }
           });
         }
         
+        // Also check for Answer section images
+        if (instantData.Answer && instantData.Answer.includes('img')) {
+          const imgMatches = instantData.Answer.match(/src=["']([^"']+)["']/g);
+          if (imgMatches) {
+            imgMatches.forEach(match => {
+              const url = match.match(/src=["']([^"']+)["']/)[1];
+              const fixedUrl = fixImageUrl(url);
+              if (fixedUrl) images.push(fixedUrl);
+            });
+          }
+        }
+        
+        // Validate images by making head requests
         if (images.length > 0) {
-          addDebug(`Found ${images.length} images from instant answer`);
-          return res.status(200).json({ images, debug });
+          addDebug(`Found ${images.length} images from instant answer, validating...`);
+          
+          const validImages = [];
+          for (const imageUrl of images) {
+            try {
+              const headResponse = await fetch(imageUrl, { 
+                method: 'HEAD',
+                timeout: 3000,
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+              });
+              
+              if (headResponse.ok && headResponse.headers.get('content-type')?.startsWith('image/')) {
+                validImages.push(imageUrl);
+                addDebug(`Valid image: ${imageUrl}`);
+              } else {
+                addDebug(`Invalid image (${headResponse.status}): ${imageUrl}`);
+              }
+            } catch (e) {
+              addDebug(`Failed to validate image: ${imageUrl} - ${e.message}`);
+            }
+          }
+          
+          if (validImages.length > 0) {
+            addDebug(`Returning ${validImages.length} valid images`);
+            return res.status(200).json({ images: validImages, debug });
+          } else {
+            addDebug("No valid images found from instant answer, trying fallback");
+          }
         }
       }
     } catch (e) {
@@ -187,17 +261,37 @@ export default async function handler(req, res) {
     const urls = Array.from(foundUrls).slice(0, 20);
     addDebug(`Final result: ${urls.length} unique image URLs`);
     
+    // If all else fails, try alternative approaches
     if (urls.length === 0) {
-      // Show HTML sample for debugging
-      addDebug("No images found. HTML sample:", searchText.substring(0, 1000));
+      addDebug("Trying alternative image sources...");
+      
+      // Try searching for generic images from reliable sources
+      const alternativeImages = [
+        // Placeholder images for common searches
+        `https://via.placeholder.com/300x200/0066cc/ffffff?text=${encodeURIComponent(q)}`,
+        // Try some free image APIs
+        `https://picsum.photos/300/200?random=${Date.now()}`,
+      ];
+      
+      // For specific queries, try to find better alternatives
+      if (q.toLowerCase().includes('nature') || q.toLowerCase().includes('landscape')) {
+        alternativeImages.push('https://picsum.photos/300/200?category=nature');
+      }
+      
+      if (q.toLowerCase().includes('city') || q.toLowerCase().includes('urban')) {
+        alternativeImages.push('https://picsum.photos/300/200?category=city');
+      }
+      
+      addDebug(`Providing ${alternativeImages.length} alternative images`);
+      
       return res.status(200).json({ 
-        images: [], 
+        images: alternativeImages, 
         debug, 
-        message: "No images found. DuckDuckGo may be blocking or the query returned no results.",
+        message: "No images found from search. Providing alternative placeholder images.",
         suggestions: [
-          "Try a different search query",
+          "Try a more specific search query",
           "Use a different image search service",
-          "Check if your IP is being rate-limited"
+          "Consider using official APIs like Unsplash or Pixabay"
         ]
       });
     }
